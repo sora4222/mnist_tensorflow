@@ -7,12 +7,15 @@ import matplotlib.pyplot as plt
 from typing import Tuple, Union
 from sklearn.preprocessing import OneHotEncoder
 
-LEARNING_RATE=0.00001
+LEARNING_RATE = 0.003
 
 INPUT: int = 784
-LAYER_ONE: int = 100
-LAYER_TWO: int = 50
+LAYER_ONE: int = 200
+LAYER_TWO: int = 100
+LAYER_THREE: int = 60
+LAYER_FOUR: int = 30
 OUTPUT: int = 10
+
 
 def load_and_separate_data(file_name: str, test: bool = False) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
     data: np.ndarray = np.loadtxt(os.path.join("MNIST_ALL", file_name), skiprows=1, delimiter=',')
@@ -33,8 +36,23 @@ def display_random_image(dataset_X: np.ndarray, dataset_labels: np.ndarray):
     print("The label is : {}".format(dataset_labels[random_val]))
     plt.show()
 
-def initialize_layer():
-    pass
+
+def fully_connected_layer(activation_values: tf.Tensor,
+                          input_neurons: int,
+                          output_neurons: int,
+                          name: str,
+                          layer_number: int,
+                          logits=False):
+    with tf.name_scope(name):
+        W = tf.get_variable("W" + str(layer_number), shape=[input_neurons, output_neurons])
+        B = tf.get_variable("B" + str(layer_number), shape=[1, output_neurons],
+                            initializer=tf.ones_initializer)
+
+        logits_values = tf.matmul(activation_values, W) + B
+        if logits:
+            return logits_values
+        else:
+            return tf.nn.relu(logits_values, name="Relu-Activation")
 
 
 if __name__ == '__main__':
@@ -65,44 +83,42 @@ if __name__ == '__main__':
     labels: tf.Tensor = tf.placeholder(tf.float32, [None, OUTPUT], name="LabelData")
 
     # Initialize the layers
+    layer_1_activation = fully_connected_layer(input_layer, INPUT, LAYER_ONE,
+                                               "Layer-one", 1)
 
-    W1 = tf.get_variable("W1", shape=[INPUT, LAYER_ONE],
-                         initializer=tf.contrib.layers.xavier_initializer())
-    B1 = tf.get_variable("B1", shape=[1, LAYER_ONE],
-                         initializer=tf.ones_initializer())
-    # Multiply and activate the layers
+    layer_2_activation = fully_connected_layer(layer_1_activation,
+                                               LAYER_ONE,
+                                               LAYER_TWO,
+                                               "Layer-two",
+                                               2)
+    layer_3_activation = fully_connected_layer(layer_2_activation,
+                                               LAYER_TWO,
+                                               LAYER_THREE,
+                                               "Layer-three",
+                                               3)
+    layer_4_activation = fully_connected_layer(layer_3_activation,
+                                               LAYER_THREE,
+                                               LAYER_FOUR,
+                                               "Layer-four",
+                                               4)
+    output_logits = fully_connected_layer(layer_4_activation,
+                                          LAYER_FOUR,
+                                          OUTPUT,
+                                          "Logits-output",
+                                          5,
+                                          True)
 
-    # Initialize the next
-
-    W2 = tf.get_variable("W2", shape=[LAYER_ONE,  LAYER_TWO],
-                         initializer=tf.contrib.layers.xavier_initializer())
-    B2 = tf.get_variable("B2", shape=[1, LAYER_TWO],
-                         initializer=tf.ones_initializer())
-
-    # Create another layer with logits
-    Z1 = tf.matmul(input_layer, W1) + B1
-    A1 = tf.nn.relu(Z1, name="Relu-Activation1")
-
-    Z2 = tf.matmul(A1, W2) + B2
-    A2 = tf.nn.relu(Z2, name="Relu-Activation2")
-
-    W3 = tf.get_variable("W3", shape=[LAYER_TWO, OUTPUT],
-                         initializer=tf.contrib.layers.xavier_initializer())
-    B3 = tf.get_variable("B3", shape=[1, OUTPUT],
-                         initializer=tf.ones_initializer())
-    output_logits = tf.matmul(A2, W3) + B3
-
-    y_vals = tf.nn.softmax(output_logits)
+    y_values = tf.nn.softmax(output_logits)
 
     cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(logits=output_logits,
-                                                               labels=train_labels,
+                                                               labels=labels,
                                                                name="Cross-Entropy")
 
     cost_op = tf.reduce_mean(cross_entropy, name="Loss-function")
 
     # Optimize the logits
-    correct_prediction = tf.equal(tf.argmax(y_vals, 1), tf.argmax(train_labels, 1))
-    train_op = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(cost_op)
+    correct_prediction = tf.equal(tf.argmax(y_values, 1), tf.argmax(labels, 1))
+    train_op = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(cost_op, name="Minimization-step")
 
     accuracy: tf.Tensor = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
 
@@ -119,11 +135,13 @@ if __name__ == '__main__':
                                        graph=tf.get_default_graph())
         writer.add_graph(tf.get_default_graph())
         sess.run(init)
-        for i in range(0, 10):
+        for i in range(0, 100):
             train_result, summary, accuracy_val = sess.run([train_op, summary_op, accuracy],
                                                            feed_dict={input_layer: train_set,
                                                                       labels: train_labels_hot})
 
             writer.add_summary(summary, i)
             print("Epoch: {}, {:.3f}%".format(i, accuracy_val * 100))
+        writer.close()
+
 
