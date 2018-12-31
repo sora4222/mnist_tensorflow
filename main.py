@@ -7,7 +7,12 @@ import matplotlib.pyplot as plt
 from typing import Tuple, Union
 from sklearn.preprocessing import OneHotEncoder
 
+tf.logging.set_verbosity(tf.logging.INFO)
+
+
 LEARNING_RATE = 0.003
+IMAGE_WIDTH: int = 28
+IMAGE_HEIGHT: int = 28
 
 INPUT: int = 784
 LAYER_ONE: int = 200
@@ -15,6 +20,8 @@ LAYER_TWO: int = 100
 LAYER_THREE: int = 60
 LAYER_FOUR: int = 30
 OUTPUT: int = 10
+
+training_in_progress = None
 
 
 def load_and_separate_data(file_name: str, test: bool = False) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
@@ -37,22 +44,74 @@ def display_random_image(dataset_X: np.ndarray, dataset_labels: np.ndarray):
     plt.show()
 
 
-def fully_connected_layer(activation_values: tf.Tensor,
-                          input_neurons: int,
-                          output_neurons: int,
-                          name: str,
-                          layer_number: int,
-                          logits=False):
-    with tf.name_scope(name):
-        W = tf.get_variable("W" + str(layer_number), shape=[input_neurons, output_neurons])
-        B = tf.get_variable("B" + str(layer_number), shape=[1, output_neurons],
-                            initializer=tf.ones_initializer)
+def model(features, labels, mode, params):
+    print("features: {}".format(features['x'].shape))
+    print("labels size: {}".format(labels.shape))
+    input_layer_shaped = tf.reshape(features['x'], [-1, 28, 28, 1], name="Reshape_input")
 
-        logits_values = tf.matmul(activation_values, W) + B
-        if logits:
-            return logits_values
-        else:
-            return tf.nn.relu(logits_values, name="Relu-Activation")
+    # Initialize the layers
+    layer_1_cnn_relu: tf.Tensor = tf.layers.conv2d(input_layer_shaped,
+                                                   filters=32,
+                                                   kernel_size=(5, 5),
+                                                   strides=[1, 1],
+                                                   padding='same',
+                                                   activation=tf.nn.relu)
+
+    layer_1_pooled: tf.Tensor = tf.layers.max_pooling2d(layer_1_cnn_relu,
+                                                        pool_size=[2, 2],
+                                                        strides=2)
+
+    layer_2_relu: tf.Tensor = tf.layers.conv2d(layer_1_pooled,
+                                               filters=64,
+                                               kernel_size=(5, 5),
+                                               padding='same',
+                                               activation=tf.nn.relu)
+    layer_2_pool: tf.Tensor = tf.layers.max_pooling2d(layer_2_relu,
+                                                      pool_size=[2, 2],
+                                                      strides=2)
+
+    layer_2_pool_flat: tf.Tensor = tf.reshape(layer_2_pool,
+                                              shape=[-1, layer_2_pool.shape[1] * layer_2_pool.shape[2] * 64])
+
+    layer_3_dense: tf.Tensor = tf.layers.dense(layer_2_pool_flat,
+                                               units=1024,
+                                               activation=tf.nn.relu)
+
+    layer_4_dense_dropout: tf.Tensor = tf.layers.dropout(layer_3_dense,
+                                                         rate=0.4,
+                                                         training=training_in_progress == tf.estimator.ModeKeys.TRAIN)
+
+    logits_layer: tf.Tensor = tf.layers.dense(layer_4_dense_dropout,
+                                              units=10)
+
+    predictions = {
+        'classes': tf.argmax(input=logits_layer, axis=1),
+        'probabilities': tf.nn.softmax(logits_layer, name="softmax_tensor")
+    }
+
+    if mode == tf.estimator.ModeKeys.PREDICT:
+        return tf.estimator.EstimatorSpec(mode=mode, predictions=predictions)
+
+    loss = tf.losses.softmax_cross_entropy(labels, logits=logits_layer)
+
+    if mode == tf.estimator.ModeKeys.TRAIN:
+        optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE)
+        train_op = optimizer.minimize(loss=loss,
+                                      global_step=tf.train.get_global_step())
+        return tf.estimator.EstimatorSpec(mode=mode,
+                                          loss=loss,
+                                          train_op=train_op)
+    eval_metric_ops = {
+        'accuracy': tf.metrics.accuracy(
+            labels=tf.argmax(labels, axis=1),
+            predictions=predictions["classes"]
+        )
+    }
+    return tf.estimator.EstimatorSpec(
+        mode=mode,
+        loss=loss,
+        eval_metric_ops=eval_metric_ops
+    )
 
 
 if __name__ == '__main__':
@@ -61,6 +120,7 @@ if __name__ == '__main__':
     train_set: np.ndarray
     train_labels: np.ndarray
     train_labels, train_set = load_and_separate_data("train.csv")
+    print(train_set.shape)
 
     test_set: np.ndarray
     test_set = load_and_separate_data("test.csv", test=True)
@@ -79,69 +139,32 @@ if __name__ == '__main__':
     print("Normal labelling:")
     print(train_labels)
 
-    input_layer: tf.Tensor = tf.placeholder(tf.float32, [None, INPUT], name="InputData")
-    labels: tf.Tensor = tf.placeholder(tf.float32, [None, OUTPUT], name="LabelData")
+    cnn_estimator: tf.estimator.Estimator = tf.estimator.Estimator(
+        model_fn=model, model_dir="tmp/mnist_cnn")
 
-    # Initialize the layers
-    layer_1_activation = fully_connected_layer(input_layer, INPUT, LAYER_ONE,
-                                               "Layer-one", 1)
+    # Set up logging for predictions
+    tensors_to_log = {"probabilities": "softmax_tensor"}
+    logging_hook = tf.train.LoggingTensorHook(
+        tensors=tensors_to_log, every_n_iter=50)
 
-    layer_2_activation = fully_connected_layer(layer_1_activation,
-                                               LAYER_ONE,
-                                               LAYER_TWO,
-                                               "Layer-two",
-                                               2)
-    layer_3_activation = fully_connected_layer(layer_2_activation,
-                                               LAYER_TWO,
-                                               LAYER_THREE,
-                                               "Layer-three",
-                                               3)
-    layer_4_activation = fully_connected_layer(layer_3_activation,
-                                               LAYER_THREE,
-                                               LAYER_FOUR,
-                                               "Layer-four",
-                                               4)
-    output_logits = fully_connected_layer(layer_4_activation,
-                                          LAYER_FOUR,
-                                          OUTPUT,
-                                          "Logits-output",
-                                          5,
-                                          True)
+    train_input_fn = tf.estimator.inputs.numpy_input_fn(
+        x={'x': train_set},
+        y=train_labels_hot,
+        batch_size=400,
+        num_epochs=None,
+        shuffle=True)
 
-    y_values = tf.nn.softmax(output_logits)
+    cnn_estimator.train(input_fn=train_input_fn,
+                        steps=5,
+                        hooks=[logging_hook])
 
-    cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(logits=output_logits,
-                                                               labels=labels,
-                                                               name="Cross-Entropy")
+    eval_input_fn = tf.estimator.inputs.numpy_input_fn(
+        x={'x': train_set},
+        y=train_labels_hot,
+        batch_size=400,
+        num_epochs=1,
+        shuffle=False)
 
-    cost_op = tf.reduce_mean(cross_entropy, name="Loss-function")
-
-    # Optimize the logits
-    correct_prediction = tf.equal(tf.argmax(y_values, 1), tf.argmax(labels, 1))
-    train_op = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(cost_op, name="Minimization-step")
-
-    accuracy: tf.Tensor = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
-
-    # Create summaries of the variables
-    tf.summary.scalar("Loss_function", cost_op)
-    tf.summary.scalar("Accuracy", accuracy)
-    summary_op = tf.summary.merge_all()
-
-    init = tf.global_variables_initializer()
-
-    # Predict the outputs
-    with tf.Session(graph=tf.get_default_graph())as sess:
-        writer = tf.summary.FileWriter("tensorboardlog",
-                                       graph=tf.get_default_graph())
-        writer.add_graph(tf.get_default_graph())
-        sess.run(init)
-        for i in range(0, 100):
-            train_result, summary, accuracy_val = sess.run([train_op, summary_op, accuracy],
-                                                           feed_dict={input_layer: train_set,
-                                                                      labels: train_labels_hot})
-
-            writer.add_summary(summary, i)
-            print("Epoch: {}, {:.3f}%".format(i, accuracy_val * 100))
-        writer.close()
-
-
+    eval_train_results = cnn_estimator.evaluate(input_fn=eval_input_fn,
+                                                steps=1)
+    print(eval_train_results)
